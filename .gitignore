@@ -1,0 +1,7 @@
+iban_nmt_checkpoints/
+iban_translator_model/
+
+*.db
+
+venv/
+__pycache__/
