@@ -1,72 +1,71 @@
 import os
 import pandas as pd
 from datasets import Dataset
-from transformers import (
-    AutoTokenizer,
-    AutoModelForSeq2SeqLM,
-    DataCollatorForSeq2Seq,
-    Seq2SeqTrainer,
-    Seq2SeqTrainingArguments
-)
+from transformers import MarianMTModel, MarianTokenizer, Seq2SeqTrainingArguments, Seq2SeqTrainer, DataCollatorForSeq2Seq
 
+# Paths
 script_dir = os.path.dirname(os.path.abspath(__file__))
-dataset_path = os.path.join(script_dir, "cleaned_iban_dataset.csv")
+project_root = os.path.dirname(script_dir)
+data_path = os.path.join(project_root, "data", "final", "synthetic_parallel_corpus_CLEANED.csv")
+model_output_dir = os.path.join(project_root, "models", "iban_nmt_v1")
 
-# 1. Load Sanitized Data
-df = pd.read_csv(dataset_path)
-df = df.rename(columns={"source_word": "id", "english_translation": "en"})
+# 1. Load Parent Model and BPE Tokenizer
+model_checkpoint = "Helsinki-NLP/opus-mt-ms-en"
+tokenizer = MarianTokenizer.from_pretrained(model_checkpoint)
+model = MarianMTModel.from_pretrained(model_checkpoint)
 
-# Convert to Hugging Face Dataset and Train/Val split (90/10)
+# 2. Load and Prepare Dataset
+df = pd.read_csv(data_path)
+df = df.dropna()
+
+# Convert pandas dataframe to HuggingFace Dataset
 raw_dataset = Dataset.from_pandas(df)
-dataset_split = raw_dataset.train_test_split(test_size=0.1, seed=42)
+raw_dataset = raw_dataset.train_test_split(test_size=0.2, seed=42) # 80/20 split for training and BLEU evaluation
 
-# 2. Base Model & Tokenizer
-model_name = "Helsinki-NLP/opus-mt-id-en"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-
-# 3. Preprocessing
+# 3. Tokenization Function
 def preprocess_function(examples):
-    inputs = [str(ex) for ex in examples["id"]]
-    targets = [str(ex) for ex in examples["en"]]
+    inputs = [str(ex) for ex in examples["iban_sentence"]]
+    targets = [str(ex) for ex in examples["english_sentence"]]
+    
+    # Tokenize source and target sequences with a 128 max length constraint
     model_inputs = tokenizer(inputs, max_length=128, truncation=True)
-    labels = tokenizer(text_target=targets, max_length=128, truncation=True)
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(targets, max_length=128, truncation=True)
+        
     model_inputs["labels"] = labels["input_ids"]
     return model_inputs
 
-tokenized_datasets = dataset_split.map(preprocess_function, batched=True)
+tokenized_datasets = raw_dataset.map(preprocess_function, batched=True)
 
-# 4. Training Arguments
-training_args = Seq2SeqTrainingArguments(
-    output_dir="./iban_nmt_checkpoints",
-    eval_strategy="epoch",
-    learning_rate=5e-5,
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
-    weight_decay=0.01,
-    save_total_limit=2,
-    num_train_epochs=3,
-    predict_with_generate=True,
-    logging_steps=100,
-    save_strategy="epoch"
-)
-
+# 4. Define Training Hyperparameters (From Methodology)
 data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
 
-# 5. Trainer Initialization (Updated for latest Hugging Face API)
+training_args = Seq2SeqTrainingArguments(
+    output_dir=model_output_dir,
+    evaluation_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    weight_decay=0.01,
+    save_total_limit=3,
+    num_train_epochs=20,
+    predict_with_generate=True,
+    fp16=True, # Enables mixed precision for faster GPU training
+)
+
+# 5. Initialize Trainer and Begin Fine-Tuning
 trainer = Seq2SeqTrainer(
     model=model,
     args=training_args,
     train_dataset=tokenized_datasets["train"],
     eval_dataset=tokenized_datasets["test"],
-    processing_class=tokenizer,
+    tokenizer=tokenizer,
     data_collator=data_collator,
 )
 
-# 6. Execute Training & Save Final Artifact
+print(f"Starting NMT training on {len(df)} sentence pairs...")
 trainer.train()
 
-final_save_path = os.path.join(script_dir, "iban_translator_model")
-model.save_pretrained(final_save_path)
-tokenizer.save_pretrained(final_save_path)
-print(f"Fine-tuning complete. Artifact saved to: {final_save_path}")
+# 6. Save the Localized AI Brain
+trainer.save_model(model_output_dir)
+print(f"Training complete. Offline model saved to {model_output_dir}")
