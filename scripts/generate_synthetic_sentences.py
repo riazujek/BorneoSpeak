@@ -5,7 +5,7 @@ import pandas as pd
 import google.generativeai as genai
 
 # 1. Setup & Configuration
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6KnIrTJ0wBm9YGiqE1gGFgY8mP_ufAM1pt8VapSoqkj6g"))
+# genai.configure(api_key=os.environ.get("GEMINI_API_KEY", "nothin to see here"))
 model = genai.GenerativeModel('gemini-3.1-flash-lite') 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
